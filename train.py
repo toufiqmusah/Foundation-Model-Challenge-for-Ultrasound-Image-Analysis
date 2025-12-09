@@ -8,6 +8,7 @@ from albumentations.pytorch import ToTensorV2
 import segmentation_models_pytorch.losses as smp_losses
 import numpy as np
 import random
+import argparse
 
 # Import local modules
 from dataset import MultiTaskDataset, MultiTaskUniformSampler
@@ -30,7 +31,7 @@ RANDOM_SEED = 42
 MODEL_SAVE_PATH = 'best_model.pth' 
 VAL_SPLIT = 0.2
 
-def main():
+def main(batch_size=BATCH_SIZE, num_epochs=NUM_EPOCHS, data_root_path=DATA_ROOT_PATH):
     set_seed(RANDOM_SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device used: {device}")
@@ -53,7 +54,7 @@ def main():
     ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels'], clip=True, min_visibility=0.1))
 
     # Create full dataset to get indices
-    temp_dataset = MultiTaskDataset(data_root=DATA_ROOT_PATH, transforms=train_transforms)
+    temp_dataset = MultiTaskDataset(data_root=data_root_path, transforms=train_transforms)
     dataset_size = len(temp_dataset)
     val_size = int(dataset_size * VAL_SPLIT)
     train_size = dataset_size - val_size
@@ -64,8 +65,8 @@ def main():
     train_indices, val_indices = torch.utils.data.random_split(indices, [train_size, val_size], generator=generator)
     
     # Create separate datasets with different transforms
-    train_dataset = MultiTaskDataset(data_root=DATA_ROOT_PATH, transforms=train_transforms)
-    val_dataset = MultiTaskDataset(data_root=DATA_ROOT_PATH, transforms=val_transforms)
+    train_dataset = MultiTaskDataset(data_root=data_root_path, transforms=train_transforms)
+    val_dataset = MultiTaskDataset(data_root=data_root_path, transforms=val_transforms)
     
     # Create subsets
     train_subset = torch.utils.data.Subset(train_dataset, train_indices.indices)
@@ -76,7 +77,7 @@ def main():
     # Fix dataframe reference for subset
     train_subset.dataframe = train_dataset.dataframe.iloc[train_indices.indices].reset_index(drop=True)
     
-    train_sampler = MultiTaskUniformSampler(train_subset, batch_size=BATCH_SIZE)
+    train_sampler = MultiTaskUniformSampler(train_subset, batch_size=batch_size)
     train_loader = torch.utils.data.DataLoader(
         train_subset, 
         batch_sampler=train_sampler, 
@@ -121,16 +122,16 @@ def main():
     optimizer = optim.AdamW(param_groups)
     
     # Cosine annealing scheduler
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS, eta_min=1e-6)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
     print("\n--- Cosine Annealing Scheduler configured ---")
 
     best_val_score = -float('inf')
     print("\n" + "="*50 + "\n--- Start Training ---")
     
-    for epoch in range(NUM_EPOCHS):
+    for epoch in range(num_epochs):
         model.train()
         epoch_train_losses = defaultdict(list)
-        loop = tqdm(train_loader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS} [Train]")
+        loop = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]")
         
         for batch in loop:
             images = batch['image'].to(device)
@@ -204,4 +205,14 @@ def main():
     print(f"\n--- Training Finished ---\nBest model saved at: {MODEL_SAVE_PATH}")
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser(description='Train multi-task ultrasound model')
+    parser.add_argument('--batch_size', type=int, default=BATCH_SIZE, 
+                        help=f'Batch size for training (default: {BATCH_SIZE})')
+    parser.add_argument('--num_epochs', type=int, default=NUM_EPOCHS,
+                        help=f'Number of training epochs (default: {NUM_EPOCHS})')
+    parser.add_argument('--data_root', type=str, default=DATA_ROOT_PATH,
+                        help=f'Root directory for training data (default: {DATA_ROOT_PATH})')
+    
+    args = parser.parse_args()
+    
+    main(batch_size=args.batch_size, num_epochs=args.num_epochs, data_root_path=args.data_root)
