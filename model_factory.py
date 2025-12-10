@@ -170,8 +170,10 @@ class MultiTaskModelFactory(nn.Module):
             print(f"Initializing DINOv3 encoder: {encoder_name}")
             self.encoder = DINOv3Encoder(model_name=encoder_name)
             
-            # Create custom FPN decoder for DINOv3
-            self.fpn_decoder = smp.fpn.decoder.FPNDecoder(
+            # Create FPN decoder compatible with DINOv3 output channels
+            # We need to create a custom FPN decoder that matches DINOv3's channel structure
+            from segmentation_models_pytorch.decoders.fpn.decoder import FPNDecoder
+            self.fpn_decoder = FPNDecoder(
                 encoder_channels=self.encoder.out_channels,
                 encoder_depth=5,
                 pyramid_channels=256,
