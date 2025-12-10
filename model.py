@@ -13,6 +13,7 @@ from tqdm import tqdm
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from typing import Optional
+import argparse
 
 # Import local modules
 from model_factory import MultiTaskModelFactory
@@ -451,10 +452,17 @@ if __name__ == '__main__':
     """
     Usage example
     """
-    # Set paths
-    data_root = '/root/baseline/train'
-    output_dir = 'predictions_new_new/'
-    batch_size = 8
+    parser = argparse.ArgumentParser(description='Run inference on ultrasound images')
+    parser.add_argument('--data_root', type=str, default='/root/baseline/train',
+                        help='Data root directory containing csv_files subdirectory (default: /root/baseline/train)')
+    parser.add_argument('--output_dir', type=str, default='predictions_new_new/',
+                        help='Output directory for predictions (default: predictions_new_new/)')
+    parser.add_argument('--batch_size', type=int, default=8,
+                        help='Batch size for inference (default: 8)')
+    parser.add_argument('--model_path', type=str, default='best_model.pth',
+                        help='Path to trained model weights (default: best_model.pth)')
+    
+    args = parser.parse_args()
     
     # Data directory structure:
     # data_root/
@@ -473,7 +481,7 @@ if __name__ == '__main__':
     
     # Create model and perform prediction
     model = Model()
-    model.predict(data_root, output_dir, batch_size=batch_size)
+    model.predict(args.data_root, args.output_dir, batch_size=args.batch_size)
     
     print("Inference complete!")
 
