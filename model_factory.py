@@ -46,55 +46,54 @@ class DINOv3Encoder(nn.Module):
         print(f"Loading DINOv3 model: {model_name}")
         self.dinov3 = AutoModel.from_pretrained(model_name)
         
-        # DINOv3 ViT-B/16 architecture details
-        # Input: 224x224 (or flexible with interpolation)
-        # Patch size: 16x16
-        # Hidden size: 768 (for ViT-B)
-        self.hidden_size = self.dinov3.config.hidden_size
+        # Get the hidden size from config
+        self.hidden_size = self.dinov3.config.hidden_size  # 768 for ViT-B
         
-        # For SMP compatibility, we need to define out_channels as a list
-        # Simulating multi-scale features by extracting from different layers
-        # DINOv3 has 12 transformer blocks for ViT-B
+        # For SMP compatibility, define out_channels
+        # We'll use the pooled output (global representation) as the main feature
         self.out_channels = [
-            3,                    # Original input (stage 0)
-            self.hidden_size,     # Early layers (stage 1)
-            self.hidden_size,     # Mid layers (stage 2) 
-            self.hidden_size,     # Late layers (stage 3)
-            self.hidden_size      # Final layer (stage 4)
+            3,                    # Original input (for reference)
+            self.hidden_size,     # Pooled output feature
+            self.hidden_size,
+            self.hidden_size,
+            self.hidden_size
         ]
-        
-        # Layer indices to extract features from (0-indexed, 11 = last layer)
-        self.feature_layers = [2, 5, 8, 11]  # Extract from layers 3, 6, 9, 12
         
     def forward(self, x):
         """
-        Extract multi-scale features from DINOv3.
-        Returns list of feature maps compatible with SMP decoders.
+        Extract features from DINOv3.
+        Returns list compatible with SMP encoder interface.
         """
+        # Forward through DINOv3
+        outputs = self.dinov3(pixel_values=x)
+        
+        # Get pooled output (CLS token representation)
+        pooled = outputs.pooler_output  # Shape: (B, hidden_size)
+        
+        # For compatibility with dense prediction tasks, we need spatial features
+        # We'll get the last hidden state and reshape it to spatial dimensions
+        last_hidden = outputs.last_hidden_state  # (B, N+1, hidden_size)
+        
+        # Remove CLS token and reshape to spatial grid
         batch_size = x.shape[0]
+        patch_tokens = last_hidden[:, 1:, :]  # (B, N, hidden_size)
         
-        # Get hidden states from all layers
-        outputs = self.dinov3(x, output_hidden_states=True)
-        hidden_states = outputs.hidden_states  # Tuple of (B, N+1, hidden_size)
+        # Calculate spatial dimensions (assuming 16x16 patches)
+        h = x.shape[2] // 16
+        w = x.shape[3] // 16
         
-        features = [x]  # Stage 0: original input
+        spatial_features = patch_tokens.transpose(1, 2).reshape(
+            batch_size, self.hidden_size, h, w
+        )
         
-        # Extract features from selected layers
-        for layer_idx in self.feature_layers:
-            hidden = hidden_states[layer_idx]  # (B, N+1, hidden_size)
-            
-            # Remove CLS token
-            patch_tokens = hidden[:, 1:, :]  # (B, N, hidden_size)
-            
-            # Reshape to spatial dimensions
-            # Assuming input is square and patches are 16x16
-            h = w = int(patch_tokens.shape[1] ** 0.5)
-            spatial_features = patch_tokens.transpose(1, 2).reshape(
-                batch_size, self.hidden_size, h, w
-            )
-            features.append(spatial_features)
-        
-        return features
+        # Return features at multiple "scales" (same resolution but from different perspectives)
+        return [
+            x,                   # Original input
+            spatial_features,    # Spatial patch features
+            spatial_features,    # (repeat for multi-scale compatibility)
+            spatial_features,
+            spatial_features
+        ]
 
 # Task specific heads
 
@@ -170,17 +169,37 @@ class MultiTaskModelFactory(nn.Module):
             print(f"Initializing DINOv3 encoder: {encoder_name}")
             self.encoder = DINOv3Encoder(model_name=encoder_name)
             
-            # Create FPN decoder compatible with DINOv3 output channels
-            # We need to create a custom FPN decoder that matches DINOv3's channel structure
-            from segmentation_models_pytorch.decoders.fpn.decoder import FPNDecoder
-            self.fpn_decoder = FPNDecoder(
-                encoder_channels=self.encoder.out_channels,
-                encoder_depth=5,
-                pyramid_channels=256,
-                segmentation_channels=128,
-                dropout=0.2,
-                merge_policy='add'
+            # DINOv3 outputs uniform channel dimensions (all 768 for ViT-B)
+            # But FPN decoder expects varying channel dimensions like traditional CNNs
+            # We'll create adapter convolutions to convert DINOv3 features to expected dimensions
+            
+            # Expected channel dimensions for FPN (mimicking ResNet-34 structure)
+            target_channels = [3, 64, 128, 256, 512]  # Matching typical CNN encoder
+            
+            # Create 1x1 convolutions to adapt DINOv3's uniform channels to target channels
+            self.channel_adapters = nn.ModuleList()
+            for i, (din_ch, target_ch) in enumerate(zip(self.encoder.out_channels, target_channels)):
+                if i == 0:
+                    # First stage is the input image, no adaptation needed
+                    self.channel_adapters.append(nn.Identity())
+                else:
+                    # Adapt from DINOv3's hidden_size to target channels
+                    self.channel_adapters.append(
+                        nn.Conv2d(din_ch, target_ch, kernel_size=1, bias=False)
+                    )
+            
+            # Now create FPN decoder with the target channel dimensions
+            dummy_fpn = smp.FPN(
+                encoder_name='resnet34',  # Similar channel structure
+                encoder_weights=None,
+                in_channels=3,
+                classes=1
             )
+            self.fpn_decoder = dummy_fpn.decoder
+            
+            # Store the adapted channel dimensions for head creation
+            self.adapted_channels = target_channels
+            
         else:
             # Initialize shared SMP encoder (EfficientNet, ResNet, etc.)
             print(f"Initializing SMP encoder: {encoder_name}")
@@ -199,6 +218,13 @@ class MultiTaskModelFactory(nn.Module):
                 classes=1, 
             )
             self.fpn_decoder = temp_fpn_model.decoder
+            self.adapted_channels = None  # No adaptation needed for standard encoders
+        
+        # Determine the channel dimensions to use for head creation
+        if self.use_dinov3:
+            feature_channels = self.adapted_channels
+        else:
+            feature_channels = self.encoder.out_channels
         
         # Initialize task heads
         self.heads = nn.ModuleDict()
@@ -244,6 +270,13 @@ class MultiTaskModelFactory(nn.Module):
 
     def forward(self, x: torch.Tensor, task_id: str) -> torch.Tensor:
         features = self.encoder(x)
+        
+        # Apply channel adapters if using DINOv3
+        if self.use_dinov3:
+            adapted_features = []
+            for i, (feat, adapter) in enumerate(zip(features, self.channel_adapters)):
+                adapted_features.append(adapter(feat))
+            features = adapted_features
         
         if task_id not in self.heads:
             raise ValueError(f"Task ID '{task_id}' not found.")
