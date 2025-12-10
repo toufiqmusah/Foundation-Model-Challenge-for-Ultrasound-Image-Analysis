@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 import segmentation_models_pytorch as smp
-from typing import List, Dict
+from typing import List, Dict, Optional
+from transformers import AutoModel, AutoImageProcessor
 
 # Task configuration list
 TASK_CONFIGURATIONS = [
@@ -33,6 +34,67 @@ TASK_CONFIGURATIONS = [
     {'task_name': 'segmentation', 'num_classes': 2, 'task_id': 'ovary_tumor'},
     {'task_name': 'segmentation', 'num_classes': 2, 'task_id': 'thyroid_nodule'},
 ]
+
+# ====================================================================
+# --- 1. DINOv3 Encoder Wrapper ---
+# ====================================================================
+
+class DINOv3Encoder(nn.Module):
+    """Wrapper for DINOv3 to match SMP encoder interface."""
+    def __init__(self, model_name: str = "facebook/dinov3-vitb16-pretrain-lvd1689m"):
+        super().__init__()
+        print(f"Loading DINOv3 model: {model_name}")
+        self.dinov3 = AutoModel.from_pretrained(model_name)
+        
+        # DINOv3 ViT-B/16 architecture details
+        # Input: 224x224 (or flexible with interpolation)
+        # Patch size: 16x16
+        # Hidden size: 768 (for ViT-B)
+        self.hidden_size = self.dinov3.config.hidden_size
+        
+        # For SMP compatibility, we need to define out_channels as a list
+        # Simulating multi-scale features by extracting from different layers
+        # DINOv3 has 12 transformer blocks for ViT-B
+        self.out_channels = [
+            3,                    # Original input (stage 0)
+            self.hidden_size,     # Early layers (stage 1)
+            self.hidden_size,     # Mid layers (stage 2) 
+            self.hidden_size,     # Late layers (stage 3)
+            self.hidden_size      # Final layer (stage 4)
+        ]
+        
+        # Layer indices to extract features from (0-indexed, 11 = last layer)
+        self.feature_layers = [2, 5, 8, 11]  # Extract from layers 3, 6, 9, 12
+        
+    def forward(self, x):
+        """
+        Extract multi-scale features from DINOv3.
+        Returns list of feature maps compatible with SMP decoders.
+        """
+        batch_size = x.shape[0]
+        
+        # Get hidden states from all layers
+        outputs = self.dinov3(x, output_hidden_states=True)
+        hidden_states = outputs.hidden_states  # Tuple of (B, N+1, hidden_size)
+        
+        features = [x]  # Stage 0: original input
+        
+        # Extract features from selected layers
+        for layer_idx in self.feature_layers:
+            hidden = hidden_states[layer_idx]  # (B, N+1, hidden_size)
+            
+            # Remove CLS token
+            patch_tokens = hidden[:, 1:, :]  # (B, N, hidden_size)
+            
+            # Reshape to spatial dimensions
+            # Assuming input is square and patches are 16x16
+            h = w = int(patch_tokens.shape[1] ** 0.5)
+            spatial_features = patch_tokens.transpose(1, 2).reshape(
+                batch_size, self.hidden_size, h, w
+            )
+            features.append(spatial_features)
+        
+        return features
 
 # Task specific heads
 
@@ -97,26 +159,44 @@ class FPNGridDetectionHead(nn.Module):
 # ====================================================================
 
 class MultiTaskModelFactory(nn.Module):
-    def __init__(self, encoder_name: str, encoder_weights: str, task_configs: List[Dict]):
+    def __init__(self, encoder_name: str, encoder_weights: Optional[str], task_configs: List[Dict]):
         super().__init__()
         
-        # Initialize shared encoder
-        print(f"Initializing shared encoder: {encoder_name}")
-        self.encoder = smp.encoders.get_encoder(
-            name=encoder_name,
-            in_channels=3,
-            depth=5,
-            weights=encoder_weights,
-        )
+        # Check if using DINOv3 or traditional SMP encoder
+        self.use_dinov3 = encoder_name.startswith('facebook/dinov3')
         
-        # Initialize shared FPN decoder
-        temp_fpn_model = smp.FPN(
-            encoder_name=encoder_name,
-            encoder_weights=encoder_weights,
-            in_channels=3,
-            classes=1, 
-        )
-        self.fpn_decoder = temp_fpn_model.decoder
+        if self.use_dinov3:
+            # Initialize DINOv3 encoder
+            print(f"Initializing DINOv3 encoder: {encoder_name}")
+            self.encoder = DINOv3Encoder(model_name=encoder_name)
+            
+            # Create custom FPN decoder for DINOv3
+            self.fpn_decoder = smp.fpn.decoder.FPNDecoder(
+                encoder_channels=self.encoder.out_channels,
+                encoder_depth=5,
+                pyramid_channels=256,
+                segmentation_channels=128,
+                dropout=0.2,
+                merge_policy='add'
+            )
+        else:
+            # Initialize shared SMP encoder (EfficientNet, ResNet, etc.)
+            print(f"Initializing SMP encoder: {encoder_name}")
+            self.encoder = smp.encoders.get_encoder(
+                name=encoder_name,
+                in_channels=3,
+                depth=5,
+                weights=encoder_weights,
+            )
+            
+            # Initialize shared FPN decoder
+            temp_fpn_model = smp.FPN(
+                encoder_name=encoder_name,
+                encoder_weights=encoder_weights,
+                in_channels=3,
+                classes=1, 
+            )
+            self.fpn_decoder = temp_fpn_model.decoder
         
         # Initialize task heads
         self.heads = nn.ModuleDict()

@@ -79,6 +79,46 @@ python model.py
 
 ---
 
+## 🤖 DINOv3 Backbone Support (NEW!)
+
+This baseline now supports **Facebook's DINOv3 vision transformers** as alternative backbones! DINOv3 models provide state-of-the-art self-supervised visual features.
+
+### Quick Usage
+
+**Train with DINOv3:**
+```bash
+python train.py --encoder_name facebook/dinov3-vitb16-pretrain-lvd1689m
+```
+
+**Train with EfficientNet (original):**
+```bash
+python train.py --encoder_name efficientnet-b4 --encoder_weights imagenet
+```
+
+### Available Models
+
+| Model | Memory | Performance | Command |
+|-------|--------|-------------|---------|
+| DINOv3 ViT-S/16 | ~2GB | Good | `--encoder_name facebook/dinov3-vits16-pretrain-lvd1689m` |
+| **DINOv3 ViT-B/16** ⭐ | ~4GB | Better | `--encoder_name facebook/dinov3-vitb16-pretrain-lvd1689m` |
+| DINOv3 ViT-L/14 | ~8GB | Best | `--encoder_name facebook/dinov3-vitl14-pretrain-lvd1689m` |
+| EfficientNet-B4 | ~4GB | Good | `--encoder_name efficientnet-b4 --encoder_weights imagenet` |
+
+### Documentation
+
+- **[QUICKSTART_DINOV3.md](QUICKSTART_DINOV3.md)** - Quick commands reference
+- **[DINOV3_USAGE.md](DINOV3_USAGE.md)** - Comprehensive guide
+- **[DINOV3_INTEGRATION.md](DINOV3_INTEGRATION.md)** - Technical details
+
+### Test DINOv3 Integration
+
+```bash
+pip install -r requirements.txt
+python test_dinov3.py
+```
+
+---
+
 ## 📁 Code Structure
 
 ```

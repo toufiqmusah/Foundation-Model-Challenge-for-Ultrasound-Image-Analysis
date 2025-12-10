@@ -9,6 +9,7 @@ import segmentation_models_pytorch.losses as smp_losses
 import numpy as np
 import random
 import argparse
+from transformers import AutoImageProcessor
 
 # Import local modules
 from dataset import MultiTaskDataset, MultiTaskUniformSampler
@@ -29,32 +30,56 @@ ENCODER = 'efficientnet-b4'
 ENCODER_WEIGHTS = 'imagenet'
 RANDOM_SEED = 42
 MODEL_SAVE_PATH = 'best_model.pth' 
-VAL_SPLIT = 0.2
+VAL_SPLIT = 0.1
 
-def main(batch_size=BATCH_SIZE, num_epochs=NUM_EPOCHS, data_root_path=DATA_ROOT_PATH):
+def main(batch_size=BATCH_SIZE, num_epochs=NUM_EPOCHS, data_root_path=DATA_ROOT_PATH, 
+         encoder_name=ENCODER, encoder_weights=ENCODER_WEIGHTS):
     set_seed(RANDOM_SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device used: {device}")
+    print(f"Encoder: {encoder_name}")
+    print(f"Encoder weights: {encoder_weights}")
+    
+    # Check if using DINOv3
+    use_dinov3 = encoder_name.startswith('facebook/dinov3')
 
     # Data loading and splitting
     # Training transforms with augmentation
-    train_transforms = A.Compose([
-        A.Resize(256, 256), 
-        A.RandomBrightnessContrast(p=0.2),
-        A.GaussNoise(p=0.1), 
-        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        ToTensorV2(),
-    ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels'], clip=True, min_visibility=0.1))
-    
-    # Validation transforms without augmentation
-    val_transforms = A.Compose([
-        A.Resize(256, 256),
-        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        ToTensorV2(),
-    ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels'], clip=True, min_visibility=0.1))
+    if use_dinov3:
+        print("Using DINOv3 preprocessing pipeline")
+        # DINOv3 uses 224x224 by default
+        train_transforms = A.Compose([
+            A.Resize(224, 224), 
+            A.RandomBrightnessContrast(p=0.2),
+            A.GaussNoise(p=0.1),
+        ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels'], clip=True, min_visibility=0.1))
+        
+        val_transforms = A.Compose([
+            A.Resize(224, 224),
+        ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels'], clip=True, min_visibility=0.1))
+        
+        # Load DINOv3 processor for normalization
+        processor = AutoImageProcessor.from_pretrained(encoder_name)
+    else:
+        print("Using standard preprocessing pipeline")
+        train_transforms = A.Compose([
+            A.Resize(256, 256), 
+            A.RandomBrightnessContrast(p=0.2),
+            A.GaussNoise(p=0.1), 
+            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            ToTensorV2(),
+        ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels'], clip=True, min_visibility=0.1))
+        
+        val_transforms = A.Compose([
+            A.Resize(256, 256),
+            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            ToTensorV2(),
+        ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels'], clip=True, min_visibility=0.1))
+        
+        processor = None
 
     # Create full dataset to get indices
-    temp_dataset = MultiTaskDataset(data_root=data_root_path, transforms=train_transforms)
+    temp_dataset = MultiTaskDataset(data_root=data_root_path, transforms=train_transforms, processor=processor)
     dataset_size = len(temp_dataset)
     val_size = int(dataset_size * VAL_SPLIT)
     train_size = dataset_size - val_size
@@ -65,8 +90,8 @@ def main(batch_size=BATCH_SIZE, num_epochs=NUM_EPOCHS, data_root_path=DATA_ROOT_
     train_indices, val_indices = torch.utils.data.random_split(indices, [train_size, val_size], generator=generator)
     
     # Create separate datasets with different transforms
-    train_dataset = MultiTaskDataset(data_root=data_root_path, transforms=train_transforms)
-    val_dataset = MultiTaskDataset(data_root=data_root_path, transforms=val_transforms)
+    train_dataset = MultiTaskDataset(data_root=data_root_path, transforms=train_transforms, processor=processor)
+    val_dataset = MultiTaskDataset(data_root=data_root_path, transforms=val_transforms, processor=processor)
     
     # Create subsets
     train_subset = torch.utils.data.Subset(train_dataset, train_indices.indices)
@@ -96,7 +121,11 @@ def main(batch_size=BATCH_SIZE, num_epochs=NUM_EPOCHS, data_root_path=DATA_ROOT_
     )
     
     # Model and loss setup
-    model = MultiTaskModelFactory(encoder_name=ENCODER, encoder_weights=ENCODER_WEIGHTS, task_configs=TASK_CONFIGURATIONS).to(device)
+    model = MultiTaskModelFactory(
+        encoder_name=encoder_name, 
+        encoder_weights=encoder_weights if not use_dinov3 else None, 
+        task_configs=TASK_CONFIGURATIONS
+    ).to(device)
     
     loss_functions = {
         'segmentation': smp_losses.DiceLoss(mode='multiclass'), 
@@ -212,7 +241,17 @@ if __name__ == '__main__':
                         help=f'Number of training epochs (default: {NUM_EPOCHS})')
     parser.add_argument('--data_root', type=str, default=DATA_ROOT_PATH,
                         help=f'Root directory for training data (default: {DATA_ROOT_PATH})')
+    parser.add_argument('--encoder_name', type=str, default=ENCODER,
+                        help=f'Encoder backbone name (default: {ENCODER}). Examples: facebook/dinov3-vitb16-pretrain-lvd1689m')
+    parser.add_argument('--encoder_weights', type=str, default=ENCODER_WEIGHTS,
+                        help=f'Encoder weights (default: {ENCODER_WEIGHTS}). Ignored for DINOv3 models.')
     
     args = parser.parse_args()
     
-    main(batch_size=args.batch_size, num_epochs=args.num_epochs, data_root_path=args.data_root)
+    main(
+        batch_size=args.batch_size, 
+        num_epochs=args.num_epochs, 
+        data_root_path=args.data_root,
+        encoder_name=args.encoder_name,
+        encoder_weights=args.encoder_weights
+    )

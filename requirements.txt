@@ -1,1 +1,4 @@
 segmentation_models_pytorch
+transformers
+accelerate
+safetensors

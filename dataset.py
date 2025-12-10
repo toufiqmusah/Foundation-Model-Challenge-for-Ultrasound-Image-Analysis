@@ -12,10 +12,11 @@ from typing import Optional, Iterator, List
 import albumentations as A
 
 class MultiTaskDataset(Dataset):
-    def __init__(self, data_root: str, transforms: Optional[A.Compose] = None):
+    def __init__(self, data_root: str, transforms: Optional[A.Compose] = None, processor=None):
         super().__init__()
         self.data_root = data_root
         self.transforms = transforms
+        self.processor = processor  # DINOv3 processor if applicable
         self.csv_path = os.path.join(self.data_root, 'csv_files')
         
         if not os.path.isdir(self.csv_path):
@@ -93,10 +94,21 @@ class MultiTaskDataset(Dataset):
                     label = np.array(augmented['bboxes'][0][:4], dtype=np.float32)
                 else:
                     label = np.array([-1.0, -1.0, -1.0, -1.0], dtype=np.float32)
+        
+        # Apply DINOv3 processor if provided
+        if self.processor is not None:
+            # Processor expects PIL Image or numpy array
+            processed = self.processor(images=image, return_tensors="pt")
+            image = processed['pixel_values'].squeeze(0)  # Remove batch dimension
 
         # Format conversion & normalization
         final_label = None
-        h, w = image.shape[1], image.shape[2]
+        
+        # Handle different image formats (tensor vs numpy)
+        if isinstance(image, torch.Tensor):
+            h, w = image.shape[1], image.shape[2]
+        else:
+            h, w = image.shape[0], image.shape[1]
 
         # Ensure label is numpy for processing
         if isinstance(label, torch.Tensor):

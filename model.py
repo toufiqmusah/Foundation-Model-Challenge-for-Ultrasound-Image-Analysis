@@ -14,6 +14,7 @@ import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from typing import Optional
 import argparse
+from transformers import AutoImageProcessor
 
 # Import local modules
 from model_factory import MultiTaskModelFactory
@@ -22,10 +23,11 @@ from model_factory import MultiTaskModelFactory
 class InferenceDataset(Dataset):
     """Inference dataset class"""
     
-    def __init__(self, data_root: str, transforms: Optional[A.Compose] = None):
+    def __init__(self, data_root: str, transforms: Optional[A.Compose] = None, processor=None):
         super().__init__()
         self.data_root = data_root
         self.transforms = transforms
+        self.processor = processor  # DINOv3 processor if applicable
         self.csv_path = os.path.join(self.data_root, 'csv_files')
         
         if not os.path.isdir(self.csv_path):
@@ -70,6 +72,12 @@ class InferenceDataset(Dataset):
             augmented = self.transforms(image=image)
             image = augmented['image']
         
+        # Apply DINOv3 processor if using DINOv3
+        if self.processor is not None:
+            # Processor expects PIL Image or numpy array
+            processed = self.processor(images=image, return_tensors="pt")
+            image = processed['pixel_values'].squeeze(0)  # Remove batch dimension
+        
         # Return data including metadata
         return {
             'image': image,
@@ -109,25 +117,48 @@ class Model:
     Supports four task types: segmentation, classification, Regression, detection
     """
     
-    def __init__(self):
-        """Initialize model and load pretrained weights"""
+    def __init__(self, encoder_name: str = 'efficientnet-b4'):
+        """Initialize model and load pretrained weights
+        
+        Args:
+            encoder_name: Name of the encoder backbone
+                         - For SMP encoders: 'efficientnet-b4', 'resnet34', etc.
+                         - For DINOv3: 'facebook/dinov3-vitb16-pretrain-lvd1689m', etc.
+        """
         print("Initializing model...")
         
         # Set compute device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
         
+        # Store encoder name for preprocessing
+        self.encoder_name = encoder_name
+        self.use_dinov3 = encoder_name.startswith('facebook/dinov3')
+        
         # Model variables, will be initialized in predict()
         self.model = None
         self.task_configs = None
         self.task_id_to_name = None
         
-        # Define data preprocessing transforms (no augmentation for inference)
-        self.transforms = A.Compose([
-            A.Resize(256, 256),
-            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-            ToTensorV2(),
-        ])
+        # Define data preprocessing based on encoder type
+        if self.use_dinov3:
+            print(f"Using DINOv3 preprocessing for: {encoder_name}")
+            # DINOv3 uses its own processor
+            self.processor = AutoImageProcessor.from_pretrained(encoder_name)
+            # Note: Albumentations transforms will be applied for augmentation,
+            # then processor will be used for final normalization
+            self.transforms = A.Compose([
+                A.Resize(224, 224),  # DINOv3 typically uses 224x224
+            ])
+        else:
+            # Traditional preprocessing for SMP encoders
+            print(f"Using standard preprocessing for: {encoder_name}")
+            self.processor = None
+            self.transforms = A.Compose([
+                A.Resize(256, 256),
+                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                ToTensorV2(),
+            ])
         
         print("Model initialization complete!\n")
     
@@ -157,7 +188,11 @@ class Model:
         
         # Load dataset
         print(f"Loading dataset...")
-        dataset = InferenceDataset(data_root=data_root, transforms=self.transforms)
+        dataset = InferenceDataset(
+            data_root=data_root, 
+            transforms=self.transforms,
+            processor=self.processor
+        )
         
         # Build task_configs from dataset (dynamic construction)
         print(f"\nBuilding task configurations from dataset...")
@@ -185,8 +220,8 @@ class Model:
         # Create and load model
         print(f"\nLoading model...")
         self.model = MultiTaskModelFactory(
-            encoder_name='efficientnet-b4',
-            encoder_weights=None,
+            encoder_name=self.encoder_name,
+            encoder_weights=None if self.use_dinov3 else None,
             task_configs=self.task_configs
         ).to(self.device)
         
@@ -461,6 +496,8 @@ if __name__ == '__main__':
                         help='Batch size for inference (default: 8)')
     parser.add_argument('--model_path', type=str, default='best_model.pth',
                         help='Path to trained model weights (default: best_model.pth)')
+    parser.add_argument('--encoder_name', type=str, default='efficientnet-b4',
+                        help='Encoder backbone name (default: efficientnet-b4). Examples: facebook/dinov3-vitb16-pretrain-lvd1689m')
     
     args = parser.parse_args()
     
@@ -480,7 +517,7 @@ if __name__ == '__main__':
     # - mask_path: (Segmentation task) mask output path
     
     # Create model and perform prediction
-    model = Model()
+    model = Model(encoder_name=args.encoder_name)
     model.predict(args.data_root, args.output_dir, batch_size=args.batch_size)
     
     print("Inference complete!")
