@@ -1,8 +1,9 @@
 import torch
 import torch.nn as nn
-import segmentation_models_pytorch as smp
 from typing import List, Dict, Optional
+import segmentation_models_pytorch as smp
 from transformers import AutoModel, AutoImageProcessor
+from segmentation_models_pytorch.decoders.fpn.decoder import FPNDecoder
 
 # Task configuration list
 TASK_CONFIGURATIONS = [
@@ -161,91 +162,95 @@ class MultiTaskModelFactory(nn.Module):
     def __init__(self, encoder_name: str, encoder_weights: Optional[str], task_configs: List[Dict]):
         super().__init__()
         
-    
-        # Initialize shared SMP encoder (EfficientNet, ResNet, etc.)
-        # Initialize shared SMP encoder (EfficientNet, ResNet, etc.)
-        # print(f"Initializing SMP encoder: {encoder_name}")
-        # self.encoder = smp.encoders.get_encoder(
-        #     name=encoder_name,
-        #     in_channels=3,
-        #     depth=5,
-        #     weights=encoder_weights,
-        # )
-
+        # 1. Load the full Segformer model from the Hub
         checkpoint = "smp-hub/segformer-b4-512x512-ade-160k"
-        self.encoder = smp.from_pretrained(checkpoint)
-        print(f"Initializing SMP encoder: {checkpoint}")
+        print(f"Initializing SMP model from: {checkpoint}")
+        full_segformer_model = smp.from_pretrained(checkpoint)
         
-        # Initialize shared FPN decoder
-        temp_fpn_model = smp.FPN(
-            encoder_name=encoder_name,
-            encoder_weights=encoder_weights,
-            in_channels=3,
-            classes=1, 
+        # 2. Extract ONLY the Encoder (MixVisionTransformer)
+        # The 'Segformer' wrapper doesn't have out_channels, but its internal .encoder does.
+        self.encoder = full_segformer_model.encoder
+        
+        # 3. Get the feature channels from the encoder
+        # This will return a tuple like (64, 128, 320, 512) for mit_b4
+        self.feature_channels = self.encoder.out_channels 
+        
+        # 4. Initialize FPN Decoder MANUALLY
+        # CRITICAL FIX: You cannot use smp.FPN(encoder_name='resnet34') here.
+        # ResNet produces different channel sizes than Segformer/MiT-B4.
+        # If you mix them, you will get dimension mismatch errors in the forward pass.
+        self.fpn_decoder = FPNDecoder(
+            encoder_channels=self.feature_channels,
+            encoder_depth=len(self.feature_channels),
+            pyramid_channels=256,
+            segmentation_channels=128,
+            dropout=0.2,
+            merge_policy="add"
         )
-        self.fpn_decoder = temp_fpn_model.decoder
-        self.adapted_channels = None  # No adaptation needed for standard encoders
-    
-        feature_channels = self.encoder.out_channels
         
+        # Define the output channels of the FPN decoder (usually 128 or 256 based on config above)
+        self.fpn_out_channels = 128 
+
         # Initialize task heads
         self.heads = nn.ModuleDict()
-        
         print(f"Creating heads for {len(task_configs)} tasks...")
+        
         for config in task_configs:
             task_id = config['task_id']
             task_name = config['task_name']
             num_classes = config['num_classes']
             
             head_module = None
+            
             if task_name == 'segmentation':
                 head_module = smp.base.SegmentationHead(
-                    in_channels=self.fpn_decoder.out_channels, 
+                    in_channels=self.fpn_out_channels, 
                     out_channels=num_classes, 
                     kernel_size=1,
                     upsampling=4 
                 )
-
             elif task_name == 'classification':
+                # Use the last encoder feature map
                 head_module = SmpClassificationHead(
-                    in_channels=self.encoder.out_channels[-1],
+                    in_channels=self.feature_channels[-1], 
                     num_classes=num_classes
                 )
-
             elif task_name == 'Regression':
-                num_points = config['num_classes']
+                # Use the last encoder feature map
                 head_module = RegressionHead(
-                    in_channels=self.encoder.out_channels[-1],
-                    num_points=num_points
+                    in_channels=self.feature_channels[-1],
+                    num_points=num_classes
                 )
-
             elif task_name == 'detection':
+                # Use FPN output
                 head_module = FPNGridDetectionHead(
-                    fpn_out_channels=self.fpn_decoder.out_channels,
+                    fpn_out_channels=self.fpn_out_channels,
                     num_classes=num_classes
                 )
-
+            
             if head_module:
                 self.heads[task_id] = head_module
             else:
                 print(f"Warning: Unknown task type '{task_name}' for {task_id}")
 
     def forward(self, x: torch.Tensor, task_id: str) -> torch.Tensor:
+        # Get features from the Segformer Encoder
+        # MixVisionTransformer returns a list of features [b, c, h, w] at different scales
         features = self.encoder(x)
         
         if task_id not in self.heads:
             raise ValueError(f"Task ID '{task_id}' not found.")
-
+            
         task_config = next((item for item in TASK_CONFIGURATIONS if item["task_id"] == task_id), None)
         task_name = task_config['task_name'] if task_config else None
-
+        
         # Route features based on task type
         if task_name in ['segmentation', 'detection']:
-            # Use FPN features for dense prediction tasks
+            # Pass encoder features to FPN Decoder
             fpn_features = self.fpn_decoder(features)
             output = self.heads[task_id](fpn_features)
         else: 
-            # Use encoder features directly for global prediction tasks
+            # Use encoder features directly (features is a list, take the last/deepest one)
             output = self.heads[task_id](features)
             
         return output
