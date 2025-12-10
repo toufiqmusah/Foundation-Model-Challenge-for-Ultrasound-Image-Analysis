@@ -203,12 +203,17 @@ class MultiTaskModelFactory(nn.Module):
         else:
             # Initialize shared SMP encoder (EfficientNet, ResNet, etc.)
             print(f"Initializing SMP encoder: {encoder_name}")
-            self.encoder = smp.encoders.get_encoder(
-                name=encoder_name,
-                in_channels=3,
-                depth=5,
-                weights=encoder_weights,
-            )
+         # Initialize shared SMP encoder (EfficientNet, ResNet, etc.)
+            # print(f"Initializing SMP encoder: {encoder_name}")
+            # self.encoder = smp.encoders.get_encoder(
+            #     name=encoder_name,
+            #     in_channels=3,
+            #     depth=5,
+            #     weights=encoder_weights,
+            # )
+
+            checkpoint = "smp-hub/segformer-b4-512x512-ade-160k"
+            self.encoder = smp.from_pretrained(checkpoint)
             
             # Initialize shared FPN decoder
             temp_fpn_model = smp.FPN(
