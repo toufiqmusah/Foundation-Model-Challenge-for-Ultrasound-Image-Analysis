@@ -161,75 +161,32 @@ class MultiTaskModelFactory(nn.Module):
     def __init__(self, encoder_name: str, encoder_weights: Optional[str], task_configs: List[Dict]):
         super().__init__()
         
-        # Check if using DINOv3 or traditional SMP encoder
-        self.use_dinov3 = encoder_name.startswith('facebook/dinov3')
-        
-        if self.use_dinov3:
-            # Initialize DINOv3 encoder
-            print(f"Initializing DINOv3 encoder: {encoder_name}")
-            self.encoder = DINOv3Encoder(model_name=encoder_name)
-            
-            # DINOv3 outputs uniform channel dimensions (all 768 for ViT-B)
-            # But FPN decoder expects varying channel dimensions like traditional CNNs
-            # We'll create adapter convolutions to convert DINOv3 features to expected dimensions
-            
-            # Expected channel dimensions for FPN (mimicking ResNet-34 structure)
-            target_channels = [3, 64, 128, 256, 512]  # Matching typical CNN encoder
-            
-            # Create 1x1 convolutions to adapt DINOv3's uniform channels to target channels
-            self.channel_adapters = nn.ModuleList()
-            for i, (din_ch, target_ch) in enumerate(zip(self.encoder.out_channels, target_channels)):
-                if i == 0:
-                    # First stage is the input image, no adaptation needed
-                    self.channel_adapters.append(nn.Identity())
-                else:
-                    # Adapt from DINOv3's hidden_size to target channels
-                    self.channel_adapters.append(
-                        nn.Conv2d(din_ch, target_ch, kernel_size=1, bias=False)
-                    )
-            
-            # Now create FPN decoder with the target channel dimensions
-            dummy_fpn = smp.FPN(
-                encoder_name='resnet34',  # Similar channel structure
-                encoder_weights=None,
-                in_channels=3,
-                classes=1
-            )
-            self.fpn_decoder = dummy_fpn.decoder
-            
-            # Store the adapted channel dimensions for head creation
-            self.adapted_channels = target_channels
-            
-        else:
-            # Initialize shared SMP encoder (EfficientNet, ResNet, etc.)
-            print(f"Initializing SMP encoder: {encoder_name}")
-         # Initialize shared SMP encoder (EfficientNet, ResNet, etc.)
-            # print(f"Initializing SMP encoder: {encoder_name}")
-            # self.encoder = smp.encoders.get_encoder(
-            #     name=encoder_name,
-            #     in_channels=3,
-            #     depth=5,
-            #     weights=encoder_weights,
-            # )
+    
+        # Initialize shared SMP encoder (EfficientNet, ResNet, etc.)
+        # Initialize shared SMP encoder (EfficientNet, ResNet, etc.)
+        # print(f"Initializing SMP encoder: {encoder_name}")
+        # self.encoder = smp.encoders.get_encoder(
+        #     name=encoder_name,
+        #     in_channels=3,
+        #     depth=5,
+        #     weights=encoder_weights,
+        # )
 
-            checkpoint = "smp-hub/segformer-b4-512x512-ade-160k"
-            self.encoder = smp.from_pretrained(checkpoint)
-            
-            # Initialize shared FPN decoder
-            temp_fpn_model = smp.FPN(
-                encoder_name=encoder_name,
-                encoder_weights=encoder_weights,
-                in_channels=3,
-                classes=1, 
-            )
-            self.fpn_decoder = temp_fpn_model.decoder
-            self.adapted_channels = None  # No adaptation needed for standard encoders
+        checkpoint = "smp-hub/segformer-b4-512x512-ade-160k"
+        self.encoder = smp.from_pretrained(checkpoint)
+        print(f"Initializing SMP encoder: {checkpoint}")
         
-        # Determine the channel dimensions to use for head creation
-        if self.use_dinov3:
-            feature_channels = self.adapted_channels
-        else:
-            feature_channels = self.encoder.out_channels
+        # Initialize shared FPN decoder
+        temp_fpn_model = smp.FPN(
+            encoder_name=encoder_name,
+            encoder_weights=encoder_weights,
+            in_channels=3,
+            classes=1, 
+        )
+        self.fpn_decoder = temp_fpn_model.decoder
+        self.adapted_channels = None  # No adaptation needed for standard encoders
+    
+        feature_channels = self.encoder.out_channels
         
         # Initialize task heads
         self.heads = nn.ModuleDict()
@@ -275,13 +232,6 @@ class MultiTaskModelFactory(nn.Module):
 
     def forward(self, x: torch.Tensor, task_id: str) -> torch.Tensor:
         features = self.encoder(x)
-        
-        # Apply channel adapters if using DINOv3
-        if self.use_dinov3:
-            adapted_features = []
-            for i, (feat, adapter) in enumerate(zip(features, self.channel_adapters)):
-                adapted_features.append(adapter(feat))
-            features = adapted_features
         
         if task_id not in self.heads:
             raise ValueError(f"Task ID '{task_id}' not found.")
