@@ -1,4 +1,6 @@
 segmentation_models_pytorch
+transformers>=4.30.0
+accelerate
 transformers
 accelerate
 safetensors

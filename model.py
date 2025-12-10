@@ -143,7 +143,7 @@ class Model:
         # Define data preprocessing based on encoder type
         if self.use_dinov3:
             print(f"Using DINOv3 preprocessing for: {encoder_name}")
-            # DINOv3 uses its own processor
+            # DINOv3 uses AutoImageProcessor directly from the model
             self.processor = AutoImageProcessor.from_pretrained(encoder_name)
             # Note: Albumentations transforms will be applied for augmentation,
             # then processor will be used for final normalization
