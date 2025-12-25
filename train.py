@@ -33,12 +33,14 @@ MODEL_SAVE_PATH = 'best_model.pth'
 VAL_SPLIT = 0.1
 
 def main(batch_size=BATCH_SIZE, num_epochs=NUM_EPOCHS, data_root_path=DATA_ROOT_PATH, 
-         encoder_name=ENCODER, encoder_weights=ENCODER_WEIGHTS):
+         encoder_name=ENCODER, encoder_weights=ENCODER_WEIGHTS, pretrain_weight_path=None):
     set_seed(RANDOM_SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device used: {device}")
     print(f"Encoder: {encoder_name}")
     print(f"Encoder weights: {encoder_weights}")
+    if pretrain_weight_path:
+        print(f"Pretrain checkpoint: {pretrain_weight_path}")
     
     # Check if using DINOv3
     use_dinov3 = encoder_name.startswith('facebook/dinov3')
@@ -126,6 +128,17 @@ def main(batch_size=BATCH_SIZE, num_epochs=NUM_EPOCHS, data_root_path=DATA_ROOT_
         encoder_weights=encoder_weights if not use_dinov3 else None, 
         task_configs=TASK_CONFIGURATIONS
     ).to(device)
+    
+    # Load pretrained weights if provided
+    if pretrain_weight_path:
+        print(f"\n--- Loading pretrained weights from {pretrain_weight_path} ---")
+        try:
+            checkpoint = torch.load(pretrain_weight_path, map_location=device)
+            model.load_state_dict(checkpoint, strict=False)
+            print("✓ Successfully loaded pretrained weights for continued training")
+        except Exception as e:
+            print(f"⚠ Warning: Could not load pretrained weights: {e}")
+            print("Continuing with randomly initialized weights...")
     
     loss_functions = {
         'segmentation': smp_losses.DiceLoss(mode='multiclass'), 
@@ -245,6 +258,8 @@ if __name__ == '__main__':
                         help=f'Encoder backbone name (default: {ENCODER}). Examples: facebook/dinov3-vitb16-pretrain-lvd1689m')
     parser.add_argument('--encoder_weights', type=str, default=ENCODER_WEIGHTS,
                         help=f'Encoder weights (default: {ENCODER_WEIGHTS}). Ignored for DINOv3 models.')
+    parser.add_argument('--pretrain_weights', type=str, default=None,
+                        help='Path to pretrained model checkpoint for continued finetuning (default: None)')
     
     args = parser.parse_args()
     
@@ -253,5 +268,6 @@ if __name__ == '__main__':
         num_epochs=args.num_epochs, 
         data_root_path=args.data_root,
         encoder_name=args.encoder_name,
-        encoder_weights=args.encoder_weights
+        encoder_weights=args.encoder_weights,
+        pretrain_weight_path=args.pretrain_weights
     )
