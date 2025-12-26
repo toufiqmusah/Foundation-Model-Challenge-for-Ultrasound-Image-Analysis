@@ -163,7 +163,8 @@ class MultiTaskModelFactory(nn.Module):
         super().__init__()
         
         # 1. Load the full Segformer model from the Hub
-        checkpoint = "smp-hub/segformer-b4-512x512-ade-160k"
+        # checkpoint = "smp-hub/segformer-b4-512x512-ade-160k"
+        checkpoint = "smp-hub/segformer-b5-640x640-ade-160k"
         print(f"Initializing SMP model from: {checkpoint}")
         full_segformer_model = smp.from_pretrained(checkpoint)
         
