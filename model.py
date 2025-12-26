@@ -18,6 +18,7 @@ from transformers import AutoImageProcessor
 
 # Import local modules
 from model_factory import MultiTaskModelFactory
+from utils import BBHE
 
 
 class InferenceDataset(Dataset):
@@ -142,19 +143,21 @@ class Model:
         
         # Define data preprocessing based on encoder type
         if self.use_dinov3:
-            print(f"Using DINOv3 preprocessing for: {encoder_name}")
+            print(f"Using DINOv3 preprocessing with BBHE for: {encoder_name}")
             # DINOv3 uses AutoImageProcessor directly from the model
             self.processor = AutoImageProcessor.from_pretrained(encoder_name)
             # Note: Albumentations transforms will be applied for augmentation,
             # then processor will be used for final normalization
             self.transforms = A.Compose([
+                BBHE(p=1.0),  # Apply BBHE for contrast enhancement
                 A.Resize(224, 224),  # DINOv3 typically uses 224x224
             ])
         else:
             # Traditional preprocessing for SMP encoders
-            print(f"Using standard preprocessing for: {encoder_name}")
+            print(f"Using standard preprocessing with BBHE for: {encoder_name}")
             self.processor = None
             self.transforms = A.Compose([
+                BBHE(p=1.0),  # Apply BBHE for contrast enhancement
                 A.Resize(256, 256),
                 A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 ToTensorV2(),

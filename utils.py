@@ -4,10 +4,78 @@ import torch.nn.functional as F
 import numpy as np
 import random
 import pandas as pd
+import cv2
 from collections import defaultdict
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score
+from albumentations.core.transforms_interface import ImageOnlyTransform
 from model_factory import TASK_CONFIGURATIONS  # Needed for task name mapping
+
+def brightness_preserving_bihistogram_equalization(image):
+    """
+    Brightness Preserving Bi-Histogram Equalization (BBHE).
+    Enhances contrast while preserving mean brightness.
+    Args:
+        image: RGB image as numpy array (H, W, 3)
+    Returns:
+        Enhanced image with same shape and dtype
+    """
+    # Convert to LAB color space to process only luminance
+    lab = cv2.cvtColor(image, cv2.COLOR_RGB2LAB)
+    l_channel = lab[:, :, 0].astype(np.float32)
+    
+    # Calculate mean brightness
+    mean_brightness = np.mean(l_channel)
+    
+    # Build histogram
+    hist, bins = np.histogram(l_channel.flatten(), bins=256, range=(0, 255))
+    
+    # Split histogram at mean
+    mean_idx = int(np.round(mean_brightness))
+    
+    # Calculate CDFs for lower and upper parts
+    hist_lower = hist[:mean_idx + 1]
+    hist_upper = hist[mean_idx + 1:]
+    
+    cdf_lower = hist_lower.cumsum()
+    cdf_upper = hist_upper.cumsum()
+    
+    # Normalize CDFs
+    cdf_lower_norm = cdf_lower / (cdf_lower[-1] + 1e-10)  # Avoid division by zero
+    cdf_upper_norm = cdf_upper / (cdf_upper[-1] + 1e-10)
+    
+    # Create lookup tables
+    lut = np.zeros(256, dtype=np.float32)
+    
+    # Map lower part to [0, mean_brightness]
+    for i in range(mean_idx + 1):
+        lut[i] = cdf_lower_norm[i] * mean_brightness
+    
+    # Map upper part to [mean_brightness, 255]
+    for i in range(len(cdf_upper_norm)):
+        lut[mean_idx + 1 + i] = mean_brightness + cdf_upper_norm[i] * (255 - mean_brightness)
+    
+    # Apply lookup table
+    l_channel_eq = np.interp(l_channel.flatten(), np.arange(256), lut).reshape(l_channel.shape)
+    
+    # Clip and convert back
+    lab[:, :, 0] = np.clip(l_channel_eq, 0, 255).astype(np.uint8)
+    enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+    
+    return enhanced
+
+
+class BBHE(ImageOnlyTransform):
+    """Albumentations-compatible Brightness Preserving Bi-Histogram Equalization."""
+    
+    def __init__(self, always_apply=False, p=1.0):
+        super(BBHE, self).__init__(always_apply, p)
+    
+    def apply(self, img, **params):
+        return brightness_preserving_bihistogram_equalization(img)
+    
+    def get_transform_init_args_names(self):
+        return ()
 
 def set_seed(seed):
     """Set random seeds for reproducibility."""

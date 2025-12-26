@@ -18,7 +18,8 @@ from utils import (
     multi_task_collate_fn, 
     evaluate, 
     DetectionLoss, 
-    set_seed
+    set_seed,
+    BBHE
 )
 
 # Training configuration
@@ -48,23 +49,26 @@ def main(batch_size=BATCH_SIZE, num_epochs=NUM_EPOCHS, data_root_path=DATA_ROOT_
     # Data loading and splitting
     # Training transforms with augmentation
     if use_dinov3:
-        print("Using DINOv3 preprocessing pipeline")
+        print("Using DINOv3 preprocessing pipeline with BBHE")
         # DINOv3 uses 224x224 by default
         train_transforms = A.Compose([
+            BBHE(p=1.0),  # Apply BBHE for contrast enhancement
             A.Resize(224, 224), 
             A.RandomBrightnessContrast(p=0.2),
             A.GaussNoise(p=0.1),
         ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels'], clip=True, min_visibility=0.1))
         
         val_transforms = A.Compose([
+            BBHE(p=1.0),  # Apply BBHE for contrast enhancement
             A.Resize(224, 224),
         ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels'], clip=True, min_visibility=0.1))
         
         # Load DINOv3 processor for normalization
         processor = AutoImageProcessor.from_pretrained(encoder_name)
     else:
-        print("Using standard preprocessing pipeline")
+        print("Using standard preprocessing pipeline with BBHE")
         train_transforms = A.Compose([
+            BBHE(p=1.0),  # Apply BBHE for contrast enhancement
             A.Resize(256, 256), 
             A.RandomBrightnessContrast(p=0.2),
             A.GaussNoise(p=0.1), 
@@ -73,6 +77,7 @@ def main(batch_size=BATCH_SIZE, num_epochs=NUM_EPOCHS, data_root_path=DATA_ROOT_
         ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels'], clip=True, min_visibility=0.1))
         
         val_transforms = A.Compose([
+            BBHE(p=1.0),  # Apply BBHE for contrast enhancement
             A.Resize(256, 256),
             A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             ToTensorV2(),
