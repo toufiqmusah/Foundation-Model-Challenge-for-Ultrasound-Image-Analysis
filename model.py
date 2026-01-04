@@ -1,4 +1,31 @@
+# Sample Code Submission for Foundation Model Challenge for Ultrasound Image Analysis (FMC_UIA)
 
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+import os
+import cv2
+import json
+import numpy as np
+import pandas as pd
+import glob
+from tqdm import tqdm
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+from typing import Optional
+import argparse
+from transformers import AutoImageProcessor
+
+# Import local modules
+from model_factory import MultiTaskModelFactory
+from utils import BBHE
+
+
+class InferenceDataset(Dataset):
+    """Inference dataset class"""
+    
+    def __init__(self, data_root: str, transforms: Optional[A.Compose] = None, processor=None):
+        super().__init__()
         self.data_root = data_root
         self.transforms = transforms
         self.processor = processor  # DINOv3 processor if applicable
