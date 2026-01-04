@@ -1,31 +1,4 @@
-# Sample Code Submission for Foundation Model Challenge for Ultrasound Image Analysis (FMC_UIA)
 
-import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-import os
-import cv2
-import json
-import numpy as np
-import pandas as pd
-import glob
-from tqdm import tqdm
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
-from typing import Optional
-import argparse
-from transformers import AutoImageProcessor
-
-# Import local modules
-from model_factory import MultiTaskModelFactory
-from utils import BBHE
-
-
-class InferenceDataset(Dataset):
-    """Inference dataset class"""
-    
-    def __init__(self, data_root: str, transforms: Optional[A.Compose] = None, processor=None):
-        super().__init__()
         self.data_root = data_root
         self.transforms = transforms
         self.processor = processor  # DINOv3 processor if applicable
@@ -408,29 +381,20 @@ class Model:
     def _process_regression(self, pred, task_id, image_path, original_size):
         """
         Process regression task prediction results (keypoint localization)
-        
-        Args:
-            pred: Predicted coordinates (num_points * 2,) - normalized coordinates
-            task_id: Task ID
-            image_path: Image path
-            original_size: Original image size (height, width)
-            
-        Returns:
-            Dictionary containing prediction results
         """
         if isinstance(pred, torch.Tensor):
             pred = pred.cpu().numpy()
         
-        # Normalized coordinates
-        coords = pred.flatten().tolist()
+        # Normalized coordinates - convert to Python floats
+        coords = [float(x) for x in pred.flatten()]
         
         # Convert to pixel coordinates
         h, w = original_size
         pixel_coords = []
         for i in range(0, len(coords), 2):
             x_norm, y_norm = coords[i], coords[i+1]
-            x_pixel = x_norm * w
-            y_pixel = y_norm * h
+            x_pixel = float(x_norm * w)
+            y_pixel = float(y_norm * h)
             pixel_coords.extend([x_pixel, y_pixel])
         
         return {
@@ -446,7 +410,7 @@ class Model:
         
         Args:
             pred: Prediction result (5, H, W) - grid-based predictions
-                  First 4 channels are bbox coordinates, 5th channel is confidence score
+                First 4 channels are bbox coordinates, 5th channel is confidence score
             task_id: Task ID
             image_path: Image path
             original_size: Original image size (height, width)
@@ -467,15 +431,16 @@ class Model:
         
         # Extract predicted bbox at that location
         bbox_norm = pred[:4, best_h, best_w]
-        bbox_norm_list = bbox_norm.tolist()
+        # Convert to Python native float
+        bbox_norm_list = [float(x) for x in bbox_norm]
         
         # Convert to pixel coordinates
         img_h, img_w = original_size
         bbox_pixel = [
-            bbox_norm[0] * img_w,
-            bbox_norm[1] * img_h,
-            bbox_norm[2] * img_w,
-            bbox_norm[3] * img_h
+            float(bbox_norm[0] * img_w),
+            float(bbox_norm[1] * img_h),
+            float(bbox_norm[2] * img_w),
+            float(bbox_norm[3] * img_h)
         ]
         
         return {
@@ -525,3 +490,5 @@ if __name__ == '__main__':
     
     print("Inference complete!")
 
+
+# python3 -c "import shutil; shutil.make_archive('results', 'zip', '.')"
